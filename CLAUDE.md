@@ -73,6 +73,16 @@ Before writing:
 
 A wrong implementation that looks right is the worst outcome. If you can't name the algorithm, find the primitive, or justify why this algorithm fits, stop and ask.
 
+## 6. Commit Etiquette
+
+**Match the repo's commit style. Never co-author.**
+
+- Read `git log --oneline -5` before writing a commit message. Match the existing style (gitmoji shortcodes, unicode emoji, prefix conventions).
+- Never add `Co-Authored-By: Claude` or any AI attribution line. The commit is the user's work.
+- Never add "🤖 Generated with Claude Code" or similar trailers.
+- One logical change per commit. Don't bundle unrelated edits.
+- Commit only files you actually changed for the task. Review `git status` before `git add`.
+
 ---
 
 **These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.
