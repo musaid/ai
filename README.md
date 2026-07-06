@@ -16,6 +16,10 @@ Drop `CLAUDE.md` at the root of your repo (or a parent directory). Claude Code r
 
 Each project can add its own project-specific `CLAUDE.md` on top — env vars, commands, schema notes — and reference this one as the base.
 
+## Also here
+
+[**claude-code-hardening.md**](./claude-code-hardening.md) — a layered setup for running Claude Code with minimal prompting (auto-accept edits, auto-run sandboxed Bash) without significant risk to your codebase or device. Permission rules as policy, the OS sandbox as enforcement, git as recovery — plus a probe-and-adapt process to reproduce it on any machine.
+
 ## License
 
 MIT. Copy, fork, adapt. If a rule earns its place in your workflow, that's the point.
