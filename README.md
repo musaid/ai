@@ -24,6 +24,10 @@ The approach inverts the usual one: instead of enumerating thousands of safe com
 
 > **If you followed an earlier version of the hardening doc, read the v2 corrections.** `network.allowedDomains` does *not* restrict Bash egress without `strictAllowlist: true` — verified by reaching arbitrary hosts through a configured allowlist. Assume you have had open egress.
 
+[**agents/lean-reviewer.md**](./agents/lean-reviewer.md) — §7 applied to code review: findings only, worst first, one `file:line` block each. No summary preamble, no "positive observations", no closing recap of the findings above it. Copy it to `~/.claude/agents/` to get it in every project.
+
+It is deliberately *not* named `code-reviewer`. Project subagents (`.claude/agents/`, priority 3) shadow user ones (`~/.claude/agents/`, priority 4) with the same name, so a repo that already ships a `code-reviewer` would silently win. A distinct name works everywhere.
+
 ## License
 
 MIT. Copy, fork, adapt. If a rule earns its place in your workflow, that's the point.
