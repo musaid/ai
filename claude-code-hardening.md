@@ -1,226 +1,198 @@
 # Hardening Claude Code for Autonomous Use
 
-A layered setup that lets Claude Code run with **minimal prompting** — auto-accept edits, auto-run
-sandboxed Bash — **without significant risk to your codebase or device**. Tested on macOS 15
-(Apple Silicon), Claude Code 2.1.x.
+A setup that lets Claude Code run with **minimal prompting** — no `ask` list, Bash allowed broadly —
+**without giving up the red lines**: no credential theft, no irrecoverable deletion, no production,
+no rewriting shared history.
 
-The config in this doc is a *template*. Some values are machine-specific (node-manager paths,
-package-store paths, which credential dirs exist) and some are stack-specific (allowed domains, the
-scripts you auto-run). **Don't paste it blindly — run the probe, adapt the marked bits, verify.**
+Tested on macOS 15 (Apple Silicon), Claude Code 2.1.160. Measured against **12,239 real commands
+across 51 sessions**: **32.7 → 1.41 interruptions per session**, with every remaining stop intentional.
+
+Two files implement it: [`claude-guard.sh`](./claude-guard.sh) (the enforcement point) and
+[`install-claude-guard.sh`](./install-claude-guard.sh) (portable installer — merges into existing
+settings, backs up first, self-tests).
+
+```bash
+./install-claude-guard.sh ~/your/code/root
+```
 
 ---
 
-## The mental model (read this first)
+## v2 — three corrections to the previous version of this doc
 
-| Layer | What it is | What it protects |
+The earlier revision of this file was wrong about things that matter. All three were caught by
+measuring rather than reasoning.
+
+**1. `network.allowedDomains` does not restrict Bash egress on its own.** The old doc called it
+"the real exfiltration control" and claimed a hijacked subprocess "has nowhere to exfiltrate to."
+Verified false — with a 12-domain allowlist configured:
+
+```
+curl https://example.com   -> 200, real <title>Example Domain</title>
+curl https://pastebin.com  -> 200, real body
+POST https://httpbin.org/post -> 200
+```
+
+The sandbox proxy issues CONNECT tunnels to arbitrary hosts. **The fix is
+`sandbox.network.strictAllowlist: true`** — *"deterministically denies hosts not in allowedDomains
+instead of prompting."* Without that key the list is decorative. If your config predates this,
+assume you have had open egress.
+
+**2. A long `ask` list is the main source of prompts, and it defeats the sandbox.** `ask` outranks
+`autoAllowBashIfSandboxed`, and it outranks narrower `allow` rules — the docs are explicit: *"a
+matching ask rule prompts even when a more specific allow rule also matches the same call."* In the
+measured corpus the old `ask` list caused **73% of all prompts, of which 87% were read-only**
+(`gh pr view`, `npx tsc`, `pnpm exec eslint`). The design principle "only named scripts auto-run"
+sounds prudent and costs ~24 prompts/session for almost no security.
+
+**3. `deny` globs override a PreToolUse hook and cancel its precision.** Deny is evaluated
+regardless of what a hook returns. Keeping `Bash(rm -rf *)` "as belt and braces" alongside the guard
+hard-blocked `rm -rf node_modules`, which the guard deliberately allows. If you use the hook, remove
+Bash deny globs — the hook is strictly more precise.
+
+Smaller corrections: `Bash(pnpm run typecheck)`-style rules matched **zero** of 12,239 commands
+(real invocations are `pnpm type-check`, `pnpm --filter <pkg> build`); `Bash(git config *)` in deny
+blocks read-only `--get`/`--list` and is trivially bypassed by `git -c` / `git -C`; and leaving
+`~/.ssh` readable "so SSH push works" buys nothing, because **SSH git does not work in the sandbox
+at all** (see below).
+
+---
+
+## The mental model
+
+| Layer | What it is | What it actually protects |
 |---|---|---|
-| **1. Permission rules** (`permissions`) | *Policy* — what Claude *intends* to run | Reduces prompts; blocks obvious footguns |
-| **2. Sandbox** (`sandbox`) | *Enforcement* — OS-level fs + network isolation | Your **device**; stops exfiltration |
-| **3. git + checkpoints** | *Recovery* | Undo for anything that reaches your repo |
+| **1. PreToolUse hook** | *Enforcement* — inspects each command with real logic | The red lines. This is the only layer that can tell `psql -h localhost` from `psql -h prod-db` |
+| **2. Sandbox** | *Containment* — OS-level fs + network isolation | Your device — **but only if `strictAllowlist` is set** |
+| **3. `Read`/`Edit` denies** | *OS-level secret protection* | `.env` files, against every process — not just Claude's tools |
+| **4. git** | *Recovery* | Anything that reaches your repo |
 
-Three facts that drive every decision below:
+The inversion that makes this work: **stop enumerating safe commands; allow Bash and put one smart
+gate in front.** The official docs prescribe exactly this:
 
-1. **Permission rules match only the top-level command.** `pnpm run build` is allowlisted, but it
-   spawns `node`, which spawns anything — none of it re-checked. A static allowlist **cannot** stop a
-   poisoned build/postinstall/dependency script. Only the sandbox can.
-2. **"Accept Edits" is not your risk surface.** `acceptEdits` mode auto-clears *file-edit* prompts
-   only (edits are reversible via git). It does **not** auto-run Bash. The danger to your machine
-   lives in shell execution, which Accept Edits never touches.
-3. **Rule precedence: `deny` > `ask` > `allow` > mode default.** `deny` always wins, even in
-   `acceptEdits`. This is why secret-file denies hold no matter how permissive the rest is.
+> "To run all Bash commands without prompts except for a few you want blocked, add `"Bash"` to your
+> allow list and register a PreToolUse hook that rejects those specific commands."
 
-**The payoff combo:** sandbox on + `autoAllowBashIfSandboxed` + default-deny network. The box
-contains the blast radius, so you can safely *stop prompting for Bash* — real autonomy, because even
-a hijacked subprocess is jailed and has nowhere to exfiltrate to.
+A hook can do what prefix globs fundamentally cannot: parse each shell segment, distinguish a local
+database from a production one, tell `git push feat/x` from `git push origin +main`, and allow
+`rm -rf node_modules` while refusing `rm -rf ~`. It also **cannot be undone by accumulated
+"yes, don't ask again" clicks** — hooks outrank allow rules, so the permission file can't grow holes
+over time.
 
----
+### What the `Read` deny actually buys (better than documented)
 
-## Layer 1 — permission rules
+`Read(**/.env)` propagates to the OS sandbox and blocks **arbitrary subprocesses**, not just
+Claude's file tools:
 
-Design principles:
+```
+node   readFileSync('.env')  -> EPERM
+python open('.env')          -> PermissionError
+cat / grep / cp              -> Operation not permitted
+```
 
-- **Gate by irreversibility, not fear.** Edits & local git = auto (reversible). Installs,
-  interpreters, prod/deploy CLIs, DB clients = `ask`. Destructive/secret ops = `deny`.
-- **Only named scripts auto-run.** `pnpm run test` yes; `pnpm install` / `dlx` / `exec` / `npx` /
-  `node` / `tsx` → `ask` (that's where unvetted code enters).
-- **Paths use `**/` not `./`.** In a *global* `~/.claude/settings.json`, a `./.env` rule anchors to
-  your home dir and silently fails to match `~/projects/app/.env`. `**/.env` matches that file in any
-  repo. Basename-anchor every path rule in a global file.
-- **Deny the quiet persistence vectors:** `git config` (rewrites hooks/identity), `git reset --hard`
-  / `git clean` (nuke worktree), `eval`, `rm -rf`, force-push.
-- **`git checkout`:** allow only `git checkout -b *` and `git switch *`. Bare `git checkout <path>`
-  discards uncommitted work, so let it fall through to a prompt.
+That is genuinely strong — it survives a poisoned build script. Two caveats: it is **path**-based,
+so `git show HEAD:.env.prod` reads the same secret out of the object store untouched (the guard
+closes this), and it only helps for paths you can afford to deny — `~/.npmrc` must stay readable or
+`pnpm install` breaks, so the guard blocks *shell reads* of it while leaving pnpm's access intact.
 
 ---
 
-## Layer 2 — sandbox
+## Three things the sandbox breaks (and the fixes)
 
-| Key | Value | Why |
-|---|---|---|
-| `enabled` | `true` | Every Bash subprocess runs in Seatbelt (macOS) / bubblewrap (Linux). |
-| `failIfUnavailable` | `true` | If the sandbox can't start, Claude Code **exits** instead of silently running unprotected. Fail-closed. |
-| `autoAllowBashIfSandboxed` | `true` | Stop prompting for Bash — the box is the safety net. This is what makes it autonomous. |
-| `network.allowedDomains` | your hosts | **Default-deny egress. This is the real exfiltration control** — a script that reads a secret can't send it anywhere off-list. |
-| `filesystem.allowWrite` | tool dirs | Node-manager + package-store + cache dirs *outside* the repo that your toolchain must write to (see probe). |
-| `credentials.files` / `.envVars` | `deny` | Hard-block reading cloud creds your workflow doesn't use, and unset their env vars for subprocesses. |
+These cost more prompts than any permission rule, because each failure escalates to an unsandboxed
+retry that goes through the permission gate.
 
-Notes:
-- Reads are broadly allowed by default; **writes and network are what's confined.** That's why you
-  deny-read credentials explicitly, and why the domain allowlist matters more than anything.
-- Claude Code auto-allows its own control-plane endpoints (the Anthropic API) — you don't list them.
-- `ask` rules still gate commands that reach **beyond** the sandbox (prod deploys, remote DB). The
-  sandbox doesn't protect Cloudflare/your DB — the human prompt does. Keep `wrangler`/`psql`/
-  `git push` on `ask`. **Verify on first run that they still prompt.**
-- Takes effect on the **next** Claude Code start, globally (all projects).
+**SSH git — 100% broken.** The sandbox sets
+`GIT_SSH_COMMAND=ssh -o ProxyCommand='nc -X 5 -x localhost:PORT %h %p'`, but the proxy requires auth
+and `nc` cannot supply it:
+
+```
+nc: authentication method negotiation failed
+```
+
+Git over **HTTPS works fine** through the same proxy. Fix without touching your `~/.gitconfig` —
+scope the rewrite to Claude Code via `env`:
+
+```json
+"env": {
+  "GIT_CONFIG_COUNT": "1",
+  "GIT_CONFIG_KEY_0": "url.https://github.com/.insteadOf",
+  "GIT_CONFIG_VALUE_0": "git@github.com:"
+}
+```
+
+**`gh` — 100% broken.** `tls: failed to verify certificate: x509: OSStatus -26276`. Go's darwin x509
+verifier needs the `com.apple.trustd` Mach service, which Seatbelt denies. Every `gh` call fails,
+and `gh auth status` misreports the token as invalid, sending you down a pointless re-auth path.
+Fix: `sandbox.enableWeakerNetworkIsolation: true`. The docs flag it as reducing security; the
+alternative is running `gh` entirely outside the sandbox, which is worse.
+
+**Sibling repos are read-only.** `allowWrite: ["."]` covers only the launch directory. Add your code
+root to both `permissions.additionalDirectories` and `sandbox.filesystem.allowWrite`, or every edit
+in another repo escalates. Also add `~/Library/Caches` (macOS) — Playwright, esbuild and node-gyp
+write there.
+
+---
+
+## What the guard enforces
+
+| Verdict | Examples |
+|---|---|
+| **deny** | `rm -rf /` · `rm -rf ~` · `git push --force` / `-f` / `+main` · `git push --delete` · `reflog expire` · `gc --prune=now` · `filter-branch` · `psql -h <non-local>` · `wrangler deploy` / `--remote` · `gh repo delete` · `gh auth token` · `cat ~/.npmrc` · `git show HEAD:.env.prod` · `shred` · `dd of=` |
+| **ask** | `--force-with-lease` · push to `main` · `git reset --hard` · `git clean -fd` · `rm -rf <anything not a build artifact>` · `npx <unknown package>` · `DROP TABLE` / `TRUNCATE` · `find -delete` |
+| **pass** | everything else — including `git fetch/pull/push feat/x`, `gh pr view/diff/checkout`, `pnpm install`, `pnpm --filter X build`, `npx tsc/eslint/prettier`, `rm -rf node_modules` |
+
+Design notes worth knowing before you edit it:
+
+- **Per-segment evaluation.** Splitting on `&&`/`||`/`;`/`|` is not cosmetic. Matching the whole
+  command string denied `pnpm exec env-cmd -f ../../.env ts-node` as a *force-push* — a stray `-f`
+  three tokens away from an unrelated `git` mention. Whole-string matching produced 3.5 bogus
+  denials per session.
+- **Build artifacts are matched by path component, not substring.** A substring test lets
+  `rm -rf ~/node_modules_backup_important` through.
+- **Fails closed.** No `jq`, or unparseable input, returns `ask` — never silent approval.
+- **`--force-with-lease` asks rather than denies.** It is the safe force-push and people genuinely
+  use it; a hard block just sends them to a terminal.
+- **Cost:** ~36 ms per command (133 ms for a pathological 25-segment chain).
 
 ---
 
 ## Reproduce on a new machine
 
-### 0. Prereqs
-- macOS: Seatbelt is built in (`/usr/bin/sandbox-exec`). Nothing to install.
-- Linux: install `bwrap` (bubblewrap) + `socat`; the sandbox needs them.
-- Claude Code ≥ 2.x.
-
-### 1. Probe the machine (paths differ per machine!)
+`install-claude-guard.sh` handles the machine-specific parts — code roots are arguments (or probed
+from `~/work`, `~/code`, `~/src`, `~/dev`, `~/projects`, `~/repos`, `~/Developer`), cache paths
+switch on `uname`, and the guard's `PATH` covers Apple Silicon, Intel, and Linux. It merges into
+existing settings (your `model`, plugins, MCP config and your own hooks survive), backs up first,
+and aborts if its own 4-pass/4-deny self-test fails.
 
 ```bash
-echo "== os ==";        sw_vers 2>/dev/null; uname -s
-echo "== seatbelt ==";  which sandbox-exec || echo "linux: need bwrap+socat"
-echo "== claude ==";    claude --version
-echo "== tools ==";     for t in node pnpm npm yarn bun git gh psql wrangler; do printf '%s: ' "$t"; which "$t" 2>/dev/null || echo '(absent)'; done
-echo "== node mgr ==";  ls -d ~/.local/state/fnm_multishells ~/.nvm ~/.volta ~/.asdf ~/.local/share/mise 2>/dev/null
-echo "== pkg store ==";  pnpm store path 2>/dev/null; npm config get cache 2>/dev/null; ls -d ~/Library/pnpm ~/.cache ~/.npm ~/.bun 2>/dev/null
-echo "== cred dirs ==";  ls -d ~/.aws ~/.config/gcloud ~/.azure ~/.ssh ~/.config/gh ~/.kube ~/.docker 2>/dev/null
+./install-claude-guard.sh ~/code
+# then RESTART Claude Code — sandbox settings only apply at startup
+curl -s -o /dev/null -w '%{http_code}\n' https://example.com   # want 000/403, not 200
 ```
 
-### 2. Adapt the marked bits from the probe output
-- **`allowWrite`** ← your node-manager's per-shell write dir + package store/cache.
-  Examples: fnm → `~/.local/state/fnm_multishells`; volta → `~/.volta`; asdf → `~/.asdf/shims`;
-  pnpm → `~/Library/pnpm` (macOS) or `~/.local/share/pnpm` (Linux); plus `~/.cache`, `~/.npm`.
-  **If you skip your node manager's write path, the sandbox blocks its per-shell init and node/pnpm
-  vanish from `PATH` — the whole toolchain breaks.**
-- **`credentials` deny** ← cred dirs the probe found that your stack doesn't use (e.g. `~/.aws`,
-  `~/.config/gcloud` on a Cloudflare project). Pure attack-surface removal, zero cost.
-- **`network.allowedDomains`** ← your package registry, git host, cloud provider, doc sites, and any
-  **remote DB host** you `psql` into.
-- **`allow` / `ask`** ← your project's real `package.json` scripts (allow) and your deploy/DB CLIs (ask).
+Linux needs `bwrap` + `socat`; both platforms need `jq` (the guard fails closed without it, which
+would turn every command into a prompt).
 
-### 3. Merge into `~/.claude/settings.json`
-Preserve existing top-level keys (`model`, etc.) and merge arrays — don't replace the file.
-
-### 4. Validate
-```bash
-python3 -c "import json,sys; json.load(open(sys.argv[1])); print('valid JSON')" ~/.claude/settings.json
-```
-
-### 5. First-run verification (do once, in a fresh session)
-1. **Launches?** If Claude Code refuses to start, the sandbox failed — set `failIfUnavailable:false`
-   temporarily and run `/sandbox` to diagnose.
-2. **Toolchain survived?** Have it run `node -v` / `pnpm run typecheck`. "Not found" → your node
-   manager needs another `allowWrite` path.
-3. **Prod still gated?** First `git push` / `wrangler` / `psql` must still **prompt**. If one
-   auto-runs, move it firmly into `ask` (or `deny`) and re-check.
-4. **Egress locked?** A blocked domain shows a clear network denial (not a hang). Add legit hosts as
-   you hit them — default-deny makes the blocks informative, not fatal.
+That last `curl` is the important one. **Verify it rather than trusting it** — that is the single
+check the previous version of this doc got wrong.
 
 ---
 
-## The config (template — adapt the `# ← marked` bits)
+## Residual risks
 
-```jsonc
-{
-  // ... your existing top-level keys (model, includeCoAuthoredBy, ...) stay here ...
-  "permissions": {
-    "defaultMode": "default",
-    "allow": [
-      "Edit", "Write",
-      // ← your real package.json scripts:
-      "Bash(pnpm run typecheck)", "Bash(pnpm run lint)", "Bash(pnpm run lint:*)",
-      "Bash(pnpm run test)", "Bash(pnpm run test:*)", "Bash(pnpm run build)", "Bash(pnpm run dev)",
-      // local, reversible git:
-      "Bash(git add *)", "Bash(git commit *)", "Bash(git checkout -b *)", "Bash(git switch *)",
-      "Bash(git branch *)", "Bash(git stash *)",
-      // ← doc sites you trust:
-      "WebFetch(domain:developer.mozilla.org)", "WebFetch(domain:*.github.com)",
-      "WebFetch(domain:docs.claude.com)", "WebFetch(domain:developers.cloudflare.com)",
-      "WebFetch(domain:reactrouter.com)"
-    ],
-    "ask": [
-      // code entry points — never blanket-allow:
-      "Bash(pnpm install*)", "Bash(pnpm add *)", "Bash(pnpm update *)", "Bash(pnpm dlx *)",
-      "Bash(pnpm exec *)", "Bash(npx *)", "Bash(node *)", "Bash(tsx *)",
-      // destructive-to-worktree + remote git:
-      "Bash(git checkout -- *)", "Bash(git push *)", "Bash(git fetch *)", "Bash(git pull *)",
-      "Bash(git remote *)", "Bash(git merge *)", "Bash(git rebase *)", "Bash(gh *)",
-      // ← reaches prod / beyond the sandbox:
-      "Bash(wrangler *)", "Bash(curl *)", "Bash(wget *)", "Bash(ssh *)", "Bash(scp *)", "Bash(psql *)",
-      // sensitive edits (basename-anchored for global scope):
-      "Edit(**/migrations/**)", "Edit(**/schema.prisma)", "Edit(**/wrangler.toml)",
-      "Edit(**/wrangler.jsonc)", "Edit(**/package.json)", "Edit(**/.github/**)"
-    ],
-    "deny": [
-      "Bash(rm -rf *)", "Bash(git reset --hard *)", "Bash(git push --force *)", "Bash(git push -f *)",
-      "Bash(git clean *)", "Bash(git config *)", "Bash(eval *)",
-      "Read(**/.env)", "Read(**/.env.*)", "Read(**/.dev.vars)", "Read(**/.dev.vars.*)",
-      "Read(**/secrets/**)", "Edit(**/.env*)", "Edit(**/.dev.vars*)"
-    ]
-  },
-  "sandbox": {
-    "enabled": true,
-    "failIfUnavailable": true,
-    "autoAllowBashIfSandboxed": true,
-    "network": {
-      "allowedDomains": [                 // ← default-deny; list only what you need
-        "github.com", "*.github.com", "*.githubusercontent.com",
-        "registry.npmjs.org", "*.cloudflare.com", "binaries.prisma.sh",
-        "developer.mozilla.org", "docs.claude.com", "developers.cloudflare.com", "reactrouter.com"
-      ]
-    },
-    "filesystem": {
-      "allowWrite": [                      // ← from probe: node mgr + pkg store + caches
-        "~/Library/pnpm", "~/.local/state/fnm_multishells", "~/.cache", "~/.npm"
-      ]
-    },
-    "credentials": {
-      "files": [                           // ← cred dirs your stack does NOT use
-        { "path": "~/.aws", "mode": "deny" },
-        { "path": "~/.config/gcloud", "mode": "deny" }
-      ],
-      "envVars": [
-        { "name": "AWS_ACCESS_KEY_ID", "mode": "deny" },
-        { "name": "AWS_SECRET_ACCESS_KEY", "mode": "deny" },
-        { "name": "AWS_SESSION_TOKEN", "mode": "deny" },
-        { "name": "GOOGLE_APPLICATION_CREDENTIALS", "mode": "deny" }
-      ]
-    }
-  }
-}
-```
-> `settings.json` is strict JSON — the `//` comments above are for reading only; strip them in the real file.
-
----
-
-## Residual risks (know these)
-
-- **Allowlisted egress is still egress.** `*.cloudflare.com` is open for your app, so a subprocess
-  holding `CLOUDFLARE_API_TOKEN` in its env could reach prod. Mitigation: keep `wrangler` on `ask`;
-  optionally deny `CLOUDFLARE_API_TOKEN` as an env var if you only deploy by hand.
-- **Prompt injection.** Claude reading a malicious file/page/issue can be told to run an allowlisted
-  command. The sandbox contains the *consequence*; it can't stop the *attempt*. Default-deny egress +
-  `ask` on prod is what keeps this cheap.
-- **In-repo damage.** Claude can still write bad code or make bad commits. git + `/rewind` file
-  checkpointing (`"fileCheckpointingEnabled": true`) is the undo.
-- **`~/.ssh` left readable** so SSH `git push` works. If you push over HTTPS only, deny it too.
-- **Zero risk is not on the table** for an autonomous agent that holds prod credentials. The goal is
-  *small, bounded* risk — which this achieves.
-
----
-
-## Recap: what each piece buys you
-
-- **Permission rules** → fewer prompts + blocks obvious footguns. *Policy.*
-- **Sandbox fs/network** → device safety + no exfiltration. *Enforcement.*
-- **`autoAllowBashIfSandboxed`** → the autonomy actually materializes, safely.
-- **`ask` on prod/DB** → human gate where the sandbox can't reach.
-- **git + checkpoints** → recovery for the rest.
+- **A permissions config cannot stop a malicious dependency.** The guard inspects command strings
+  Claude submits; it has zero visibility into what `pnpm install` then executes. What actually helps:
+  pnpm 10+ blocks dependency build scripts by default (check yours with `pnpm ignored-builds` — keep
+  `onlyBuiltDependencies` short, it is your attack surface), and the OS-level `.env` read-deny.
+  The guard adds an `npx <unknown package>` gate, since `npx` executes registry code with no such
+  protection.
+- **`~/.npmrc` holds plaintext tokens and must stay readable** for installs to work. The guard blocks
+  shell reads of it, but any process that runs can read it. Scope those tokens to the minimum
+  (`read:packages`) and rotate them.
+- **`ask` may not prompt inside subagents.** Reported during this work but not confirmed in a main
+  session; if true, `ask` was never a security boundary for delegated work — another reason
+  enforcement belongs in the hook.
+- **Prompt injection.** Claude reading a malicious PR diff or issue can be *told* to run something.
+  The guard is what makes the attempt cheap; it is the layer that matters for this threat.
+- **Zero risk is not on the table** for an autonomous agent with credentials on the box. The goal is
+  small, bounded, and *measured* risk.

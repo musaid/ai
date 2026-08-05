@@ -18,7 +18,11 @@ Each project can add its own project-specific `CLAUDE.md` on top — env vars, c
 
 ## Also here
 
-[**claude-code-hardening.md**](./claude-code-hardening.md) — a layered setup for running Claude Code with minimal prompting (auto-accept edits, auto-run sandboxed Bash) without significant risk to your codebase or device. Permission rules as policy, the OS sandbox as enforcement, git as recovery — plus a probe-and-adapt process to reproduce it on any machine.
+[**claude-code-hardening.md**](./claude-code-hardening.md) — running Claude Code with minimal prompting without giving up the red lines (no credential theft, no irrecoverable deletion, no production, no rewriting shared history). Measured against 12,239 real commands: **32.7 → 1.41 interruptions per session**, every remaining stop intentional.
+
+The approach inverts the usual one: instead of enumerating thousands of safe commands, allow Bash broadly and put one smart gate in front of it — [`claude-guard.sh`](./claude-guard.sh), installed by [`install-claude-guard.sh`](./install-claude-guard.sh). A hook can tell `psql -h localhost` from `psql -h prod-db`; a prefix glob can't.
+
+> **If you followed an earlier version of the hardening doc, read the v2 corrections.** `network.allowedDomains` does *not* restrict Bash egress without `strictAllowlist: true` — verified by reaching arbitrary hosts through a configured allowlist. Assume you have had open egress.
 
 ## License
 
