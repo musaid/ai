@@ -6,9 +6,9 @@ The whole thing is in [CLAUDE.md](./CLAUDE.md).
 
 ## Why this exists
 
-LLMs make consistent classes of mistakes when writing code: assuming instead of asking, over-engineering simple problems, "improving" code you didn't ask them to touch, declaring victory without verifying, reinventing solved problems, and fighting frameworks instead of using them.
+LLMs make consistent classes of mistakes when writing code: assuming instead of asking, over-engineering simple problems, "improving" code you didn't ask them to touch, declaring victory without verifying, reinventing solved problems, fighting frameworks instead of using them, and burying the answer in preamble and recap.
 
-This file is a small set of rules — five sections, well under 500 words — that head off those failures at the prompt level. It's deliberately short. Long instructions degrade output quality; the rules in the middle get skipped.
+This file is a small set of rules — seven sections, under 900 words — that head off those failures at the prompt level. It stays short, but the real limit is the number of rules, not the word count: adherence degrades as constraints pile up, and unresolved conflicts between rules cost more than length. Where two rules pull against each other, the file says which wins.
 
 ## How to use it
 
