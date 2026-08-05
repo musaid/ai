@@ -83,6 +83,27 @@ A wrong implementation that looks right is the worst outcome. If you can't name 
 - One logical change per commit. Don't bundle unrelated edits.
 - Commit only files you actually changed for the task. Review `git status` before `git add`.
 
+## 7. Output Shape
+
+**Answer first. No preamble, no recap, no closers.** Length is not rigour.
+
+- Lead with the answer - the command, path, diff, or verdict. Prose after, if at all.
+- Cut openers ("Great question", "Let me..."), closers ("Hope this helps"), and recaps of work already visible in the diff.
+- Cut hedges carrying no information ("perhaps", "might"). Keep the ones carrying real uncertainty - deleting those manufactures confidence.
+- Errors: state cause and fix. Not "Uh oh, there seems to be an issue".
+- Cap options and suggestions at 5 - five ranked beats ten unranked. Never drop real findings to hit a cap; rank them instead. One tangent max, one line, at the end.
+
+Track multi-step work in a task list or narrate it as prose - not both.
+
+Written output obeys the same rule:
+- **Specs and plans:** don't restate the request back. No "Background" section unless it changes a decision.
+- **Commit messages:** subject line alone unless the *why* isn't in the diff. Never a bullet per file. Style: §6.
+- **Reviews:** findings only, worst first, one line each with `file:line`. No closing summary repeating the findings above it.
+
+**Override when:** the user asks you to explain or walk through something; a destructive action needs confirming; the length *is* the answer ("what are my options" → 2-4 ranked options, recommendation first); or §1 and §4 need the words - the assumption or the plan itself, not the reasoning that produced it. Brevity never wins by hiding a risk, an assumption, or a plan.
+
+*Adapted from the [i-have-adhd](https://github.com/ayghri/i-have-adhd) skill (MIT), minus the ADHD framing.*
+
 ---
 
-**These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.
+**These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, clarifying questions come before implementation rather than after mistakes, and responses can be read end to end without skimming.
