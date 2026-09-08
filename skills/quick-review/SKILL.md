@@ -5,18 +5,18 @@ description: Quick, lean PR review that reports at most three verified, must-fix
 
 # Quick review
 
-Review the target diff (`gh pr diff <n>` for a PR number; `git diff <base>...HEAD` for a branch; `git diff` for the working tree). Read the PR/ticket description first — the review judges the diff against the problem it claims to solve.
+Establish the exact scope first: `gh pr diff <n>` for a PR number; for a branch, resolve the base explicitly (`git merge-base <default-branch> HEAD`) and diff `<base>...HEAD`; for local work, `git diff HEAD` so staged changes are included. Read the PR/ticket description — the review judges the diff against the problem it claims to solve — and read any existing review threads before treating earlier rounds as settled.
 
 Report **at most three findings**, and only ones that pass all four gates:
 
-1. **A user or teammate actually hits it** — a defect that ships, or the PR's own claim not holding (the bug it says it fixes still reproducing through some path). Name the concrete input or state that triggers it; if you can't, it's not a finding.
-2. **Judge the approach against the problem, not against alternatives.** Challenge it when it fails on the merits: wrong root cause, complexity the problem doesn't require, re-implementing what the codebase already has, breaking its conventions. If both the current approach and yours solve the problem, the one in the code wins — a lateral swap is never a finding, no matter who or what wrote the code.
-3. **It's in the diff's blast radius** — code the diff adds, changes, or makes false (a comment, a changeset claim). Pre-existing issues nearby get one closing line as ticket suggestions, never findings.
-4. **It survives verification** — confirmed against real callers, real library source, and the full enclosing functions (not just the hunks). Say plainly when a failure mode is inferred rather than demonstrated.
+1. **A user or teammate actually hits it** — incorrect behavior, a security gap, a material performance regression, or a broken compatibility contract that ships, or the PR's own claim not holding (the bug it says it fixes still reproducing through some path). Name the concrete input or state that triggers it; if you can't, it's not a finding.
+2. **Judge the approach against the problem, not against alternatives.** Wrong root causes, unnecessary complexity, duplicated mechanisms, and convention violations are findings only when they cause a concrete blocking defect. If both approaches satisfy the requirements, the one in the code wins — a lateral swap is never a finding, no matter who or what wrote the code.
+3. **It's in the diff's blast radius** — code the diff adds, changes, or makes false (a comment, a changeset claim). Pre-existing defects noticed in passing are not findings: at most one closing line may hand them off as follow-up tickets, and only when they would pass gate 1 themselves — never for conventions or cleanup.
+4. **It survives verification** — confirmed against real callers, real library source, and the full enclosing functions (not just the hunks). A finding need not be reproduced, but an inferred one must have a confirmed trigger and a traceable execution path; merely plausible failure modes are omitted. Say plainly when a failure mode is inferred rather than demonstrated.
 
 ## Output
 
-Each finding is **at most three sentences**: `file:line`, what breaks and the trigger, the fix. Worst first. No preamble, no methodology, no summary of what was reviewed, no restating findings in a conclusion.
+Each finding is **at most three sentences**: `file:line`; what breaks and the trigger; the required correction, or a minimal fix when one is clear. Worst first. No preamble, no methodology, no summary of what was reviewed, no restating findings in a conclusion.
 
 Earlier review rounds are settled; re-open a decision only for a new fact, never a preference. Zero findings is a valid, complete review: say "no blocking issues" and stop.
 
