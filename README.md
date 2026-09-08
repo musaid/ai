@@ -28,6 +28,10 @@ The approach inverts the usual one: instead of enumerating thousands of safe com
 
 It is deliberately *not* named `code-reviewer`. Project subagents (`.claude/agents/`, priority 3) shadow user ones (`~/.claude/agents/`, priority 4) with the same name, so a repo that already ships a `code-reviewer` would silently win. A distinct name works everywhere.
 
+[**skills/quick-review**](./skills/quick-review/SKILL.md) — a lean PR-review skill: at most **three** verified, must-fix findings, three sentences each. Four gates keep it honest: someone actually hits it; the approach is judged against the problem, so a lateral swap is never a finding (this kills the A→B→A churn where each review round proposes the approach the previous round replaced); it's in the diff's blast radius; and it survived verification against real callers and library source. Zero findings is a valid review. Copy the directory to `~/.claude/skills/` and invoke with `/quick-review <PR-number|branch>`.
+
+Where `lean-reviewer` reports *every* real finding in changed code, `quick-review` is the merge-gate version: only what would block, sized for a reader whose time is expensive.
+
 ## License
 
 MIT. Copy, fork, adapt. If a rule earns its place in your workflow, that's the point.
